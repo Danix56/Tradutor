@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Traductor Continuo Bidireccional</title>
+<style>
+/* --- Estilos generales --- */
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: linear-gradient(135deg, #f0f4ff, #f6f7fb);
+  color: #333;
+  padding: 15px;
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* --- Tarjeta principal --- */
+.card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px 25px;
+  max-width: 700px;
+  width: 100%;
+  margin: auto;
+  box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+  transition: all 0.3s ease;
+}
+
+/* --- Título --- */
+h1 {
+  margin-top: 0;
+  font-size: 24px;
+  color: #1e40af;
+  border-bottom: 2px solid #dbeafe;
+  padding-bottom: 10px;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+/* --- Controles --- */
+.controls {
+  margin-bottom: 20px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  justify-content: center;
+}
+
+.controls label {
+  font-weight: 600;
+  color: #374151;
+  display: flex;
+  flex-direction: column;
+}
+
+.controls select {
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background-color: #f9fafb;
+  font-size: 16px;
+  transition: border-color 0.2s;
+}
+
+.controls select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+/* --- Botones --- */
+button {
+  padding: 12px 20px;
+  border: none;
+  border-radius: 10px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#startBtn {
+  background: linear-gradient(45deg, #10b981, #059669);
+  color: white;
+}
+#startBtn:hover:not(:disabled) { transform: scale(1.05); }
+
+#stopBtn {
+  background: linear-gradient(45deg, #ef4444, #dc2626);
+  color: white;
+}
+#stopBtn:hover:not(:disabled) { transform: scale(1.05); }
+
+button:disabled {
+  background: #9ca3af !important;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* --- Log de traducción --- */
+#log {
+  border: 1px solid #e5e7eb;
+  background: #fdfdfd;
+  padding: 15px;
+  min-height: 300px;
+  max-height: 50vh;
+  overflow-y: auto;
+  border-radius: 12px;
+  font-size: 16px;
+  line-height: 1.5;
+  box-shadow: inset 0 3px 6px rgba(0,0,0,0.05);
+  margin-bottom: 8px;
+}
+
+.line { margin: 8px 0; padding-left: 10px; border-left: 4px solid transparent; }
+.src { color: #16a34a; font-weight: bold; border-left-color: #16a34a; }
+.tgt { color: #2563eb; font-weight: bold; border-left-color: #2563eb; }
+.interim { color: #6b7280; font-style: italic; border-left-color: #d1d5db; }
+
+/* --- Contador y mensaje de estado --- */
+#counter { text-align: right; font-size: 14px; color: #6b7280; margin-bottom: 10px; }
+#statusMessage { font-weight: 600; color: #374151; text-align: center; }
+
+/* --- Responsive para celular --- */
+@media (max-width: 500px){
+  h1 { font-size: 20px; }
+  .controls {
+    flex-direction: column;
+    gap: 8px;
+  }
+  button { width: 100%; }
+  #log { font-size: 15px; min-height: 250px; max-height: 50vh; }
+}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Traductor Continuo Bidireccional 🗣️</h1>
+  <div class="controls">
+    <label>Idioma Fuente:
+      <select id="sourceLang">
+        <option value="es">Español</option>
+        <option value="en">Inglés</option>
+      </select>
+    </label>
+    <label>Idioma Destino:
+      <select id="targetLang">
+        <option value="en">Inglés</option>
+        <option value="es">Español</option>
+      </select>
+    </label>
+    <button id="startBtn">Iniciar</button>
+    <button id="stopBtn" disabled>Detener</button>
+  </div>
+
+  <div id="log" aria-live="polite"></div>
+  <div id="counter">Líneas: 0 / 1000</div>
+  <p id="statusMessage">Selecciona los idiomas y pulsa Iniciar.</p>
+</div>
+
+<script>
+(async function(){
+const log = document.getElementById('log');
+const counter = document.getElementById('counter');
+const sourceLangSelector = document.getElementById('sourceLang');
+const targetLangSelector = document.getElementById('targetLang');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const statusMessage = document.getElementById('statusMessage');
+
+let recognition=null, recognizing=false, interimLineElement=null, micPermissionGranted=false;
+
+function updateCounter(){ counter.textContent=`Líneas: ${log.children.length} / 1000`; }
+
+function logLine(text, cls){ 
+  const d=document.createElement('div');
+  d.className='line '+(cls||'');
+  d.textContent=text;
+  log.appendChild(d);
+  log.scrollTop=log.scrollHeight;
+  while(log.children.length>1000){ log.removeChild(log.firstChild); }
+  updateCounter();
+}
+
+const langMap={ 'es':{speech:'es-ES',translate:'es',voice:'es-ES'}, 'en':{speech:'en-US',translate:'en',voice:'en-US'} };
+
+async function translateText(text,srcCode,tgtCode){
+  if(!text.trim())return"";
+  try{
+    const res=await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${srcCode}&tl=${tgtCode}&dt=t&q=${encodeURIComponent(text)}`);
+    const translated=await res.json();
+    return translated[0].map(a=>a[0]).join('');
+  }catch(err){console.error(err);return"ERROR DE TRADUCCIÓN";}
+}
+
+function speak(text, langCode){ 
+  if(speechSynthesis.speaking)speechSynthesis.cancel();
+  const utter=new SpeechSynthesisUtterance(text);
+  utter.lang=langCode;
+  utter.rate=1.05;
+  speechSynthesis.speak(utter);
+}
+
+async function requestMic(){
+  if(micPermissionGranted)return true;
+  try{ await navigator.mediaDevices.getUserMedia({audio:true}); micPermissionGranted=true; return true;}
+  catch(e){logLine("❌ No se pudo acceder al micrófono: "+e.message,"error"); statusMessage.textContent="❌ Acceso al micrófono denegado."; return false;}
+}
+
+function setupRecognition(){
+  const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SpeechRecognition){ logLine("❌ Tu navegador no soporta reconocimiento de voz.","error"); statusMessage.textContent="❌ Navegador no compatible."; startBtn.disabled=true; return null;}
+  const srcCodes=langMap[sourceLangSelector.value];
+  const tgtCodes=langMap[targetLangSelector.value];
+  if(!recognition){
+    recognition=new SpeechRecognition();
+    recognition.continuous=true;
+    recognition.interimResults=true;
+    recognition.lang=srcCodes.speech;
+
+    recognition.onstart=()=>{recognizing=true; startBtn.disabled=true; stopBtn.disabled=false; statusMessage.textContent=`🎧 Escuchando (${sourceLangSelector.value.toUpperCase()} → ${targetLangSelector.value.toUpperCase()})...`;}
+    recognition.onend=()=>{recognizing=false; startBtn.disabled=false; stopBtn.disabled=true; statusMessage.textContent=`Micrófono Inactivo. Pulsa Iniciar.`;}
+    recognition.onerror=e=>{logLine("❗ Error: "+e.error,"error"); statusMessage.textContent=`❗ Error: ${e.error}`;}
+    recognition.onresult=async(event)=>{
+      let interimText="", finalText="";
+      for(let i=event.resultIndex;i<event.results.length;i++){
+        const text=event.results[i][0].transcript;
+        if(event.results[i].isFinal)finalText+=text;
+        else interimText+=text;
+      }
+      if(interimText){
+        if(!interimLineElement||interimLineElement.className.indexOf('interim')===-1){interimLineElement=document.createElement('div');interimLineElement.className='line interim';log.appendChild(interimLineElement);}
+        interimLineElement.textContent=`🎤 Parcial (${sourceLangSelector.value.toUpperCase()}): ${interimText}`; log.scrollTop=log.scrollHeight; updateCounter();
+      }
+      if(finalText){
+        if(interimLineElement){interimLineElement.remove(); interimLineElement=null;}
+        logLine(`🎙 ${sourceLangSelector.value.toUpperCase()}: ${finalText}`,"src");
+        const translated=await translateText(finalText, sourceLangSelector.value,targetLangSelector.value);
+        logLine(`🔁 ${targetLangSelector.value.toUpperCase()}: ${translated}`,"tgt");
+        speak(translated, langMap[targetLangSelector.value].voice);
+      }
+    };
+  }
+  return recognition;
+}
+
+startBtn.onclick=async()=>{
+  const allowed=await requestMic(); if(!allowed)return;
+  if(!recognition)setupRecognition();
+  if(recognition&&!recognizing)recognition.start();
+};
+
+stopBtn.onclick=()=>{if(recognition&&recognizing)recognition.stop();};
+
+sourceLangSelector.onchange=()=>{if(recognition)recognition.lang=langMap[sourceLangSelector.value].speech;if(sourceLangSelector.value===targetLangSelector.value)targetLangSelector.value=(sourceLangSelector.value==='es'?'en':'es'); statusMessage.textContent=`Listo: ${sourceLangSelector.value.toUpperCase()} → ${targetLangSelector.value.toUpperCase()}`;}
+targetLangSelector.onchange=()=>{if(sourceLangSelector.value===targetLangSelector.value)sourceLangSelector.value=(targetLangSelector.value==='es'?'en':'es'); statusMessage.textContent=`Listo: ${sourceLangSelector.value.toUpperCase()} → ${targetLangSelector.value.toUpperCase()}`;}
+
+statusMessage.textContent=`Listo: ${sourceLangSelector.value.toUpperCase()} → ${targetLangSelector.value.toUpperCase()}`;
+})();
+</script>
+</body>
+</html>
